@@ -5,15 +5,29 @@ import plotly.express as px
 import matplotlib.pyplot as plt
 import seaborn as sns
 import datetime
+import io
 from astral import LocationInfo
 from astral.sun import sun
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Bat Bioacoustic Analyzer", layout="wide", page_icon="🦇")
 
+# --- STANDAR PLOT NATURE Q1 ---
+# Nature merekomendasikan font sans-serif, garis tipis, minimalis (tanpa background berlebih/grid tebal)
+sns.set_theme(style="ticks")
+plt.rcParams.update({
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+    'axes.linewidth': 1.0,
+    'axes.labelsize': 11,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+    'pdf.fonttype': 42, # Standar untuk ekspor vektor
+    'ps.fonttype': 42
+})
+
 # --- FUNGSI HELPER ---
 def length_to_sec(text):
-    """Mengonversi format durasi (MM:SS atau detik) menjadi total detik."""
     try:
         if ':' in str(text):
             parts = str(text).split(':')
@@ -24,35 +38,54 @@ def length_to_sec(text):
         return None
 
 def get_minutes_after_sunset(row):
-    """Menghitung selisih waktu rekaman dengan waktu sunset lokal."""
     try:
-        # 1. Setup Lokasi
         obs = LocationInfo("", "", "UTC", row['lat'], row['lon'])
-        
-        # 2. Setup Tanggal Rekaman
         date_obj = datetime.datetime.strptime(str(row['date']), '%Y-%m-%d').date()
-        
-        # 3. Hitung Waktu Matahari (UTC)
         s = sun(obs.observer, date=date_obj)
         sunset_time = s['sunset']
-        
-        # 4. Gabungkan Tanggal dan Jam Rekaman
         rec_time = datetime.datetime.strptime(f"{row['date']} {row['time']}", '%Y-%m-%d %H:%M')
         rec_time = rec_time.replace(tzinfo=datetime.timezone.utc)
-        
-        # 5. Hitung Selisih dalam Menit
-        diff = (rec_time - sunset_time).total_seconds() / 60
-        return diff
+        return (rec_time - sunset_time).total_seconds() / 60
     except:
         return None
 
+def create_download_button(fig, filename):
+    """Menyimpan matplotlib figure ke memory dan membuat tombol download Streamlit (300 DPI)"""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+    buf.seek(0)
+    return st.download_button(label=f"📥 Download Plot", data=buf, file_name=filename, mime="image/png")
+
+@st.cache_data
+def get_sample_csv():
+    """Membuat sample data dummy untuk didownload pengguna."""
+    sample_data = {
+        'id': [1, 2, 3, 4], 'gen': ['Pteropus', 'Pteropus', 'Rhinolophus', 'Rhinolophus'], 
+        'en': ['Large flying fox', 'Large flying fox', 'Horseshoe bat', 'Horseshoe bat'],
+        'lat': [-6.2, -6.3, 0.5, 0.6], 'lon': [106.8, 106.9, 110.1, 110.2], 'alt': [100, 150, 50, 60],
+        'date': ['2023-05-01', '2023-06-15', '2023-10-20', '2023-10-21'], 
+        'time': ['18:30', '19:00', '05:00', '18:45'], 'length': ['01:30', '00:45', '2:00', '1:10'], 
+        'q': ['A', 'B', 'A', 'A']
+    }
+    df = pd.DataFrame(sample_data)
+    return df.to_csv(index=False).encode('utf-8')
+
 # --- HEADER APLIKASI ---
 st.title("🦇 Bat Bioacoustic Data Dashboard")
-st.markdown("Dashboard komprehensif untuk analisis metadata rekaman Xeno-Canto.")
+st.markdown("Dashboard analisis metadata bioakustik dengan luaran grafik standar jurnal berkualitas (High-Res).")
 
-# --- SIDEBAR: UPLOAD & FILTER ---
+# --- SIDEBAR ---
 st.sidebar.header("📁 Data Source")
 uploaded_file = st.sidebar.file_uploader("Upload CSV Xeno-Canto", type=["csv"])
+
+st.sidebar.divider()
+st.sidebar.markdown("**Belum punya data?**")
+st.sidebar.download_button(
+    label="📄 Download Sample CSV", 
+    data=get_sample_csv(), 
+    file_name="sample_bat_data.csv", 
+    mime="text/csv"
+)
 
 if uploaded_file is not None:
     # Load Data
@@ -62,16 +95,12 @@ if uploaded_file is not None:
     df_final = df_raw.copy()
     df_final[['lat', 'lon', 'alt']] = df_final[['lat', 'lon', 'alt']].apply(pd.to_numeric, errors='coerce')
     df_final['duration_sec'] = df_final['length'].apply(length_to_sec)
-    
-    # Extract waktu dengan aman
     df_final['time_dt'] = pd.to_datetime(df_final['time'], format='%H:%M', errors='coerce')
     df_final['hour'] = df_final['time_dt'].dt.hour
     
-    # Filter Genus (Sidebar)
-    # Hapus baris yang tidak punya Genus/Spesies agar grafik tidak error
+    # Filter Genus (Hapus data NaN agar plot stabil)
     df_clean = df_final.dropna(subset=['gen', 'en']).copy()
     all_genera = sorted(df_clean['gen'].unique().tolist())
-    
     selected_genera = st.sidebar.multiselect("Pilih Genus untuk Dianalisis", all_genera, default=all_genera[:4] if len(all_genera) >= 4 else all_genera)
     df_filtered = df_clean[df_clean['gen'].isin(selected_genera)].copy()
 
@@ -79,144 +108,124 @@ if uploaded_file is not None:
     tab1, tab2, tab3, tab4 = st.tabs([
         "📍 Spasial & Elevasi", 
         "📊 Kualitas & Durasi", 
-        "🌅 Analisis Temporal (Sunset & Sirkadian)", 
-        "🔥 Activity Patterns (Heatmap)"
+        "🌅 Temporal & Sunset", 
+        "🔥 Activity Heatmap"
     ])
 
-    # ---------------------------------------------------------
-    # TAB 1: SPASIAL & ELEVASI
-    # ---------------------------------------------------------
+    # --- TAB 1: SPASIAL & ELEVASI ---
     with tab1:
         col1, col2 = st.columns([6, 4])
-        
         with col1:
             st.subheader("Global Spatial Distribution")
             df_map = df_filtered.dropna(subset=['lat', 'lon'])
             if not df_map.empty:
-                # Menggunakan scatter_map sesuai standar Plotly terbaru
-                fig_map = px.scatter_map(
-                    df_map, lat="lat", lon="lon", color="gen", 
-                    hover_name="en", zoom=1, height=500,
-                    title="Titik Perekaman Koordinat"
-                )
+                fig_map = px.scatter_map(df_map, lat="lat", lon="lon", color="gen", hover_name="en", zoom=1, height=500)
                 st.plotly_chart(fig_map, width='stretch')
-            else:
-                st.warning("Data koordinat (lat, lon) tidak mencukupi.")
-                
+        
         with col2:
             st.subheader("Elevation Distribution")
             df_alt = df_filtered.dropna(subset=['alt'])
             if not df_alt.empty:
                 fig_alt, ax_alt = plt.subplots(figsize=(6, 5))
-                sns.violinplot(data=df_alt, x='gen', y='alt', inner="quart", ax=ax_alt)
-                ax_alt.set_title("Distribusi Ketinggian (MDPL)")
-                plt.xticks(rotation=45)
+                sns.violinplot(data=df_alt, x='gen', y='alt', inner="box", ax=ax_alt, linewidth=1)
+                ax_alt.set_title("Elevation Profile", weight='bold')
+                ax_alt.set_ylabel("Elevation (m a.s.l.)")
+                ax_alt.set_xlabel("")
+                sns.despine() # Bersihkan border khas Nature
                 st.pyplot(fig_alt)
-            else:
-                st.warning("Data elevasi (alt) tidak mencukupi.")
+                create_download_button(fig_alt, "elevation_plot.png")
 
-    # ---------------------------------------------------------
-    # TAB 2: KUALITAS & DURASI
-    # ---------------------------------------------------------
+    # --- TAB 2: KUALITAS & DURASI ---
     with tab2:
-        st.subheader("Kualitas Rekaman & Sampling Usaha")
         col3, col4 = st.columns(2)
-        
         with col3:
-            st.write("**Recording Quality (A-E) Composition per Genus**")
+            st.subheader("Recording Quality")
             quality_pivot = df_filtered.groupby(['gen', 'q']).size().unstack(fill_value=0)
             if not quality_pivot.empty:
-                fig_q, ax_q = plt.subplots(figsize=(8, 5))
-                quality_pivot.plot(kind='bar', stacked=True, colormap='viridis', ax=ax_q)
+                fig_q, ax_q = plt.subplots(figsize=(6, 5))
+                quality_pivot.plot(kind='bar', stacked=True, colormap='magma_r', ax=ax_q, edgecolor='black', linewidth=0.5)
                 ax_q.set_ylabel("Number of Recordings")
-                plt.xticks(rotation=45)
+                ax_q.set_xlabel("Genus")
+                sns.despine()
                 st.pyplot(fig_q)
+                create_download_button(fig_q, "quality_composition.png")
                 
         with col4:
-            st.write("**Acoustic Sampling Duration Variability (Log Scale)**")
+            st.subheader("Acoustic Sampling Duration")
             df_dur = df_filtered.dropna(subset=['duration_sec'])
             if not df_dur.empty:
-                fig_dur, ax_dur = plt.subplots(figsize=(8, 5))
-                sns.boxenplot(data=df_dur, x='gen', y='duration_sec', ax=ax_dur)
+                fig_dur, ax_dur = plt.subplots(figsize=(6, 5))
+                sns.boxenplot(data=df_dur, x='gen', y='duration_sec', ax=ax_dur, linewidth=1)
                 ax_dur.set_yscale('log')
-                ax_dur.set_ylabel("Duration (Seconds)")
-                plt.xticks(rotation=45)
+                ax_dur.set_ylabel("Duration (Seconds, Log Scale)")
+                ax_dur.set_xlabel("Genus")
+                sns.despine()
                 st.pyplot(fig_dur)
+                create_download_button(fig_dur, "duration_plot.png")
 
-    # ---------------------------------------------------------
-    # TAB 3: ANALISIS TEMPORAL (SUNSET & INDONESIA)
-    # ---------------------------------------------------------
+    # --- TAB 3: TEMPORAL (SUNSET & SIRKADIAN) ---
     with tab3:
-        st.subheader("Analisis Aktivitas Ekologis Harian")
-        
-        # 3A. SUNSET ANALYSIS
-        st.write("### 1. Waktu Relatif Terhadap Sunset")
-        st.info("Menghitung selisih jam perekaman berdasarkan waktu matahari terbenam persis di lokasi koordinat alat.")
-        
-        if st.button("Hitung Waktu Sunset & Plot KDE"):
-            with st.spinner("Melakukan kalkulasi posisi matahari..."):
+        st.subheader("Ecological Activity Relative to Sunset")
+        if st.button("Hitung Waktu Sunset & Plot (Perlu Kalkulasi)"):
+            with st.spinner("Menghitung geometri matahari..."):
                 df_filtered['min_after_sunset'] = df_filtered.apply(get_minutes_after_sunset, axis=1)
                 df_sunset = df_filtered[(df_filtered['min_after_sunset'] > -120) & (df_filtered['min_after_sunset'] < 600)]
                 
                 if not df_sunset.empty:
-                    fig_ss, ax_ss = plt.subplots(figsize=(12, 6))
-                    sns.kdeplot(data=df_sunset, x='min_after_sunset', hue='gen', fill=True, common_norm=False, bw_adjust=0.6, ax=ax_ss)
-                    ax_ss.axvline(0, color='orange', linestyle='--', linewidth=2, label='Sunset')
-                    ax_ss.set_title("Ecological Activity Pattern: Minutes Relative to Sunset", fontsize=15)
-                    ax_ss.set_xlabel("Minutes After Sunset (0 = Sunset Time)", fontsize=12)
-                    ax_ss.set_ylabel("Activity Density", fontsize=12)
-                    ax_ss.legend()
-                    ax_ss.grid(axis='y', alpha=0.3)
+                    fig_ss, ax_ss = plt.subplots(figsize=(8, 4))
+                    sns.kdeplot(data=df_sunset, x='min_after_sunset', hue='gen', fill=True, common_norm=False, bw_adjust=0.6, alpha=0.3, ax=ax_ss)
+                    ax_ss.axvline(0, color='black', linestyle='--', linewidth=1.5, label='Sunset')
+                    ax_ss.set_xlabel("Minutes Relative to Sunset (0 = Sunset)")
+                    ax_ss.set_ylabel("Density")
+                    sns.despine()
                     st.pyplot(fig_ss)
-                else:
-                    st.error("Gagal menghitung sunset. Pastikan format 'date' (YYYY-MM-DD), 'time' (HH:MM), 'lat', dan 'lon' valid.")
+                    create_download_button(fig_ss, "sunset_activity.png")
 
         st.divider()
-        
-        # 3B. CIRCADIAN (INDONESIA / WIB CONTEXT)
-        st.write("### 2. Sirkadian (WIB / Local Time)")
+        st.subheader("Circadian Activity (Local Time)")
         df_indo = df_filtered.dropna(subset=['hour'])
-        
         if not df_indo.empty:
-            fig_indo, ax_indo = plt.subplots(figsize=(10, 5))
-            sns.kdeplot(data=df_indo, x='hour', hue='gen', fill=True, common_norm=False, bw_adjust=0.5, ax=ax_indo)
+            fig_indo, ax_indo = plt.subplots(figsize=(8, 4))
+            sns.kdeplot(data=df_indo, x='hour', hue='gen', fill=True, common_norm=False, bw_adjust=0.5, alpha=0.3, ax=ax_indo)
             ax_indo.set_xlim(0, 24)
             ax_indo.set_xticks(range(0, 25, 2))
-            ax_indo.set_title("Circadian Recording Distribution (Local Time)")
-            ax_indo.set_xlabel("Hour of Day (00:00 - 24:00)")
-            ax_indo.set_ylabel("Density of Recordings")
-            ax_indo.grid(axis='x', linestyle='--', alpha=0.5)
+            ax_indo.set_xlabel("Hour of Day (Local Time)")
+            ax_indo.set_ylabel("Density")
+            sns.despine()
             st.pyplot(fig_indo)
+            create_download_button(fig_indo, "circadian_activity.png")
 
-    # ---------------------------------------------------------
-    # TAB 4: HEATMAP ACTIVITY
-    # ---------------------------------------------------------
+    # --- TAB 4: HEATMAPS (STANDAR Q1) ---
     with tab4:
-        st.subheader("Species Activity Heatmap")
+        st.subheader("Species Activity Pattern (Heatmaps)")
         
-        # 4A. Heatmap Harian (24 Jam) - Bin 30 Menit
-        st.write("### 24-Hour Activity Pattern")
+        # 1. 24-Hour Heatmap
+        st.write("#### 24-Hour Activity Pattern")
         df_hm = df_filtered.dropna(subset=['time_dt', 'en']).copy()
         
         if not df_hm.empty:
-            # Menggunakan '30min' sesuai Pandas versi terbaru (memperbaiki error 'T' dan '30T')
+            # Gunakan bin 30 menit
             df_hm['time_bin'] = df_hm['time_dt'].dt.floor('30min').dt.strftime('%H:%M')
             pivot_daily = df_hm.groupby(['en', 'time_bin']).size().unstack(fill_value=0)
             
+            # Buat rentang waktu 24 jam utuh (00:00 - 23:30) agar sumbu x konsisten
+            full_time_bins = [f"{str(h).zfill(2)}:{str(m).zfill(2)}" for h in range(24) for m in (0, 30)]
+            pivot_daily = pivot_daily.reindex(columns=full_time_bins, fill_value=0)
+            
             if not pivot_daily.empty:
-                # Logika binarization (50% threshold)
-                pivot_bin = pivot_daily.apply(lambda x: (x >= np.percentile(x, 50)).astype(int) if x.max() > 0 else x, axis=1)
-                
-                fig_hm1, ax_hm1 = plt.subplots(figsize=(11, 4))
-                sns.heatmap(pivot_bin, cmap="Set1_r", cbar=False, linewidths=0.1, ax=ax_hm1)
+                fig_hm1, ax_hm1 = plt.subplots(figsize=(12, 3.5))
+                # cmap="Reds": 0=Putih, num_besar=Merah terang/pekat
+                sns.heatmap(pivot_daily, cmap="Reds", ax=ax_hm1, cbar_kws={'label': 'Recording Count'}, linewidths=0.5, linecolor='whitesmoke')
                 ax_hm1.set_xlabel("Time (30 min bins)")
                 ax_hm1.set_ylabel("Species")
+                plt.xticks(rotation=90)
                 st.pyplot(fig_hm1)
+                create_download_button(fig_hm1, "24h_heatmap.png")
         
         st.divider()
         
-        # 4B. Heatmap Mingguan (Musiman)
-        st.write("### Seasonal/Weekly Activity Pattern")
+        # 2. Weekly Heatmap
+        st.write("#### Seasonal / Weekly Activity Pattern")
         df_hm['date_dt'] = pd.to_datetime(df_hm['date'], errors='coerce')
         df_hm['week'] = df_hm['date_dt'].dt.isocalendar().week
         df_hm_week = df_hm.dropna(subset=['week']).copy()
@@ -224,15 +233,20 @@ if uploaded_file is not None:
         if not df_hm_week.empty:
             pivot_week = df_hm_week.groupby(['en', 'week']).size().unstack(fill_value=0)
             
+            # Memaksa Sumbu X dimulai dari Minggu 1 hingga Minggu 52
+            pivot_week = pivot_week.reindex(columns=range(1, 53), fill_value=0)
+            
             if not pivot_week.empty:
-                # Normalisasi MinMaxScaler analog (skala 0 - 1 per baris/spesies)
+                # Normalisasi data 0 ke 1 per spesies (Relative Activity)
                 pivot_week_scaled = pivot_week.div(pivot_week.max(axis=1), axis=0).fillna(0)
                 
-                fig_hm2, ax_hm2 = plt.subplots(figsize=(11, 4))
-                sns.heatmap(pivot_week_scaled, cmap="Reds", linewidths=0.5, ax=ax_hm2)
-                ax_hm2.set_xlabel("Week Number")
+                fig_hm2, ax_hm2 = plt.subplots(figsize=(12, 3.5))
+                sns.heatmap(pivot_week_scaled, cmap="Reds", ax=ax_hm2, cbar_kws={'label': 'Relative Activity'}, linewidths=0.5, linecolor='whitesmoke')
+                ax_hm2.set_xlabel("Week Number (1 - 52)")
                 ax_hm2.set_ylabel("Species")
+                plt.xticks(rotation=0)
                 st.pyplot(fig_hm2)
+                create_download_button(fig_hm2, "weekly_heatmap.png")
 
 else:
-    st.info("👋 Selamat datang! Silakan unggah file CSV hasil ekspor data Xeno-Canto melalui menu di sebelah kiri.")
+    st.info("👋 Unggah file CSV di sebelah kiri, atau unduh sample data jika ingin mencoba aplikasinya.")
