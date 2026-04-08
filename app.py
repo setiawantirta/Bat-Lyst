@@ -240,7 +240,7 @@ if uploaded_file is not None:
                 # Normalisasi data 0 ke 1 per spesies (Relative Activity)
                 pivot_week_scaled = pivot_week.div(pivot_week.max(axis=1), axis=0).fillna(0)
                 
-                fig_hm2, ax_hm2 = plt.subplots(figsize=(12, 3.5))
+                fig_hm2, ax_hm2 = plt.subplots(figsize=(20, 3.5))
                 sns.heatmap(pivot_week_scaled, cmap="Reds", ax=ax_hm2, cbar_kws={'label': 'Relative Activity'}, linewidths=0.5, linecolor='whitesmoke')
                 ax_hm2.set_xlabel("Week Number (1 - 52)")
                 ax_hm2.set_ylabel("Species")
