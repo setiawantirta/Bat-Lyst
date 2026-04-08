@@ -114,26 +114,85 @@ if uploaded_file is not None:
 
     # --- TAB 1: SPASIAL & ELEVASI ---
     with tab1:
+        # 1. Pastikan kolom tanggal berformat datetime untuk filter
+        df_filtered['date_dt'] = pd.to_datetime(df_filtered['date'], errors='coerce')
+        
+        # 2. Buat Expander untuk Custom Filter
+        with st.expander("🔍 Custom Filter Spasial (Tanggal, Waktu, Lokasi)", expanded=True):
+            f_col1, f_col2, f_col3 = st.columns(3)
+            
+            # --- Filter Tanggal ---
+            # Mengambil tanggal paling awal dan paling akhir dari data
+            min_date = df_filtered['date_dt'].min().date() if pd.notna(df_filtered['date_dt'].min()) else datetime.date(2000, 1, 1)
+            max_date = df_filtered['date_dt'].max().date() if pd.notna(df_filtered['date_dt'].max()) else datetime.datetime.now().date()
+            
+            selected_dates = f_col1.date_input(
+                "Rentang Tanggal", 
+                value=(min_date, max_date), 
+                min_value=min_date, 
+                max_value=max_date
+            )
+            
+            # --- Filter Waktu (Jam) ---
+            selected_hours = f_col2.slider("Rentang Jam (Waktu Lokal)", 0, 23, (0, 23))
+            
+            # --- Filter Lokasi ---
+            # Deteksi apakah menggunakan kolom 'cnt' (Negara) atau 'loc' (Nama Lokasi)
+            loc_col = 'cnt' if 'cnt' in df_filtered.columns else ('loc' if 'loc' in df_filtered.columns else None)
+            
+            if loc_col:
+                all_locs = sorted(df_filtered[loc_col].dropna().unique().tolist())
+                selected_locs = f_col3.multiselect(f"Pilih Lokasi ({loc_col})", all_locs, default=all_locs)
+            else:
+                f_col3.info("Kolom lokasi ('cnt' atau 'loc') tidak ditemukan.")
+                selected_locs = []
+
+        # 3. Terapkan Filter ke Dataframe
+        df_tab1 = df_filtered.copy()
+        
+        # Eksekusi filter tanggal jika input rentang lengkap (awal dan akhir terpilih)
+        if len(selected_dates) == 2:
+            start_date, end_date = selected_dates
+            df_tab1 = df_tab1[(df_tab1['date_dt'].dt.date >= start_date) & (df_tab1['date_dt'].dt.date <= end_date)]
+            
+        # Eksekusi filter waktu
+        df_tab1 = df_tab1[(df_tab1['hour'] >= selected_hours[0]) & (df_tab1['hour'] <= selected_hours[1])]
+        
+        # Eksekusi filter lokasi
+        if loc_col and selected_locs:
+            df_tab1 = df_tab1[df_tab1[loc_col].isin(selected_locs)]
+
+        # 4. Render Plot dengan Data yang Sudah Difilter
         col1, col2 = st.columns([6, 4])
+        
         with col1:
             st.subheader("Global Spatial Distribution")
-            df_map = df_filtered.dropna(subset=['lat', 'lon'])
+            df_map = df_tab1.dropna(subset=['lat', 'lon'])
+            
             if not df_map.empty:
-                fig_map = px.scatter_map(df_map, lat="lat", lon="lon", color="gen", hover_name="en", zoom=1, height=500)
+                fig_map = px.scatter_map(
+                    df_map, lat="lat", lon="lon", color="gen", 
+                    hover_name="en", zoom=1, height=500,
+                    title=f"Total Rekaman: {len(df_map)}"
+                )
                 st.plotly_chart(fig_map, width='stretch')
+            else:
+                st.warning("⚠️ Tidak ada koordinat yang sesuai dengan filter yang dipilih.")
         
         with col2:
             st.subheader("Elevation Distribution")
-            df_alt = df_filtered.dropna(subset=['alt'])
+            df_alt = df_tab1.dropna(subset=['alt'])
             if not df_alt.empty:
                 fig_alt, ax_alt = plt.subplots(figsize=(6, 5))
                 sns.violinplot(data=df_alt, x='gen', y='alt', inner="box", ax=ax_alt, linewidth=1)
                 ax_alt.set_title("Elevation Profile", weight='bold')
                 ax_alt.set_ylabel("Elevation (m a.s.l.)")
                 ax_alt.set_xlabel("")
-                sns.despine() # Bersihkan border khas Nature
+                sns.despine()
                 st.pyplot(fig_alt)
                 create_download_button(fig_alt, "elevation_plot.png")
+            else:
+                st.info("Data elevasi (alt) tidak tersedia untuk filter ini.")
 
     # --- TAB 2: KUALITAS & DURASI ---
     with tab2:
